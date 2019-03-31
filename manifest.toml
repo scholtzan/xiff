@@ -1,0 +1,3 @@
+name = "xiff"
+version = "0.0.1"
+exec_path = "./bin/xiff"
