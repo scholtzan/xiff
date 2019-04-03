@@ -10,6 +10,7 @@ edition = "2018"
 serde = "1.0"
 serde_derive = "1.0"
 regex = "1"
+git2 = "0.8"
 
 [dependencies.xi-plugin-lib]
 path = "../xi-mac/xi-editor/rust/plugin-lib"
