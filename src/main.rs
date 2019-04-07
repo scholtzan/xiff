@@ -4,23 +4,23 @@ extern crate xi_core_lib as xi_core;
 extern crate xi_plugin_lib;
 extern crate xi_rope;
 
-use git2::{Commit, DiffOptions, ObjectType, Repository, Signature, Time};
-use git2::{DiffFormat, Error, Pathspec};
-use std::cmp::max;
+use git2::{DiffOptions, Repository};
 use std::path::Path;
-use std::str;
 
 use crate::xi_core::annotations::AnnotationType;
 use crate::xi_core::plugin_rpc::DataSpan;
-use crate::xi_core::rpc::CoreNotification;
 use crate::xi_core::ConfigTable;
-use git2::{DiffHunk, DiffLine};
+use git2::DiffLine;
 use serde_json::json;
 use xi_plugin_lib::{mainloop, ChunkCache, Plugin, View};
 use xi_rope::interval::Interval;
 use xi_rope::rope::RopeDelta;
+use xi_rope::delta::DeltaRegion;
 
-struct XiffPlugin {}
+struct XiffPlugin {
+    unsaved_inserts: Vec<usize>,
+    unsaved_deletions: Vec<usize>,
+}
 
 impl Plugin for XiffPlugin {
     type Cache = ChunkCache;
@@ -31,40 +31,66 @@ impl Plugin for XiffPlugin {
 
     fn did_close(&mut self, _view: &View<Self::Cache>) {}
 
-    fn did_save(&mut self, _view: &mut View<Self::Cache>, _old: Option<&Path>) {}
+    fn did_save(&mut self, _view: &mut View<Self::Cache>, _old: Option<&Path>) {
+        self.unsaved_inserts = Vec::new();
+        self.unsaved_deletions = Vec::new();
+    }
 
     fn config_changed(&mut self, _view: &mut View<Self::Cache>, _changes: &ConfigTable) {}
 
     fn update(
         &mut self,
         view: &mut View<Self::Cache>,
-        _delta: Option<&RopeDelta>,
+        delta: Option<&RopeDelta>,
         _edit_type: String,
         _author: String,
     ) {
+        if let Some(delta) = delta {
+            for DeltaRegion { old_offset, .. } in delta.iter_deletions() {
+                let line = view.line_of_offset(old_offset).unwrap();
+
+                if !self.unsaved_deletions.contains(&line) {
+                    self.unsaved_deletions.push(line);
+                }
+            }
+
+            for DeltaRegion { new_offset, .. } in delta.iter_inserts() {
+                let line = view.line_of_offset(new_offset).unwrap();
+
+                if !self.unsaved_deletions.contains(&line) {
+                    self.unsaved_inserts.push(line);
+                }
+            }
+        }
+
         self.update_diff(view, Interval::new(0, view.get_buf_size()));
     }
 }
 
 impl XiffPlugin {
     fn new() -> XiffPlugin {
-        XiffPlugin {}
+        XiffPlugin {
+            unsaved_inserts: Vec::new(),
+            unsaved_deletions: Vec::new(),
+        }
     }
 
     fn lines_to_data_span(&self, lines: Vec<usize>, view: &mut View<ChunkCache>) -> Vec<DataSpan> {
         let mut i = 0;
         let mut spans: Vec<DataSpan> = Vec::new();
+        let mut sorted_lines = lines.clone();
+        sorted_lines.sort();
 
-        while i < lines.len() {
-            let start = lines.get(i).unwrap();
+        while i < sorted_lines.len() {
+            let start = sorted_lines.get(i).unwrap();
 
-            while i < lines.len() - 1 && lines.get(i + 1).unwrap() - 1 == *lines.get(i).unwrap() {
+            while i < sorted_lines.len() - 1 && sorted_lines.get(i + 1).unwrap() - 1 <= *sorted_lines.get(i).unwrap() {
                 i = i + 1;
             }
 
             spans.push(DataSpan {
                 start: view.offset_of_line(*start).unwrap(),
-                end: view.offset_of_line(*lines.get(i).unwrap() + 1).unwrap() - 1,
+                end: view.offset_of_line(*sorted_lines.get(i).unwrap() + 1).unwrap() - 1,
                 data: json!(null),
             });
 
@@ -104,7 +130,10 @@ impl XiffPlugin {
 
                         true
                     }),
-                );
+                ).expect("Error parsing diff");
+
+                inserted_lines.extend(&self.unsaved_inserts);
+                deleted_lines.extend(&self.unsaved_deletions);
 
                 let (modified_lines, inserted_lines): (Vec<usize>, Vec<usize>) = inserted_lines
                     .into_iter()
