@@ -57,8 +57,9 @@ impl XiffPlugin {
         XiffPlugin {}
     }
 
-    fn update_diff(&mut self, view: &mut View<ChunkCache>, interval: Interval) {
+    fn get_diffs(&mut self, view: &mut View<ChunkCache>) -> Option<Vec<Difference>> {
         if let Some(path) = view.get_path() {
+            // get repository if current folder is part of one
             if let Ok(repo) = Repository::open(path.parent().unwrap()) {
                 let mut opts = DiffOptions::new();
                 opts.new_prefix(path)
@@ -66,14 +67,20 @@ impl XiffPlugin {
                     .include_untracked(false);
 
                 if let Ok(odb) = repo.odb() {
-                    let obj = repo.revparse_single("HEAD").unwrap();
-                    let head_tree = obj.peel(ObjectType::Tree).unwrap();
+                    // get file version that is part of HEAD
+                    let head_obj = repo.revparse_single("HEAD").unwrap();
+                    let head_tree = head_obj.peel(ObjectType::Tree).unwrap();
                     let head_file_oid = head_tree
                         .as_tree()
                         .unwrap()
-                        .get_path(&Path::new("test.txt"))
+                        .get_path(&Path::new(path.file_name().unwrap()))
                         .unwrap()
                         .id();
+
+                    let head_blob = repo.find_blob(head_file_oid).unwrap();
+                    let head_content = str::from_utf8(head_blob.content()).unwrap();
+
+                    // get current file version
                     let new_oid = odb
                         .write(
                             ObjectType::Blob,
@@ -81,100 +88,114 @@ impl XiffPlugin {
                         )
                         .unwrap();
 
-                    let old = repo.find_blob(new_oid).unwrap();
-                    let new = repo.find_blob(head_file_oid).unwrap();
+                    let new_blob = repo.find_blob(new_oid).unwrap();
+                    let new_content = str::from_utf8(new_blob.content()).unwrap();
 
-                    let new_content = str::from_utf8(old.content()).unwrap();
-                    let old_content = str::from_utf8(new.content()).unwrap();
+                    let Changeset { diffs, .. } = Changeset::new(head_content, new_content, "\n");
 
-                    let mut inserted_spans: Vec<DataSpan> = Vec::new();
-                    let mut deleted_spans: Vec<DataSpan> = Vec::new();
-                    let mut modified_spans: Vec<DataSpan> = Vec::new();
-
-                    let Changeset { diffs, .. } = Changeset::new(old_content, new_content, "\n");
-
-                    let mut offset = 0;
-                    let mut start: Option<usize> = None;
-                    let mut change: Option<ChangeType> = None;
-
-                    for diff in diffs {
-                        match diff {
-                            Difference::Same(ref x) => {
-                                if let Some(span_start) = start {
-                                    match change {
-                                        Some(ChangeType::Insertion) => {
-                                            inserted_spans.push(DataSpan {
-                                                start: span_start,
-                                                end: offset,
-                                                data: json!(null),
-                                            })
-                                        }
-                                        Some(ChangeType::Modification) => {
-                                            modified_spans.push(DataSpan {
-                                                start: span_start,
-                                                end: offset,
-                                                data: json!(null),
-                                            })
-                                        }
-                                        Some(ChangeType::Deletion) => {
-                                            deleted_spans.push(DataSpan {
-                                                start: span_start,
-                                                end: span_start + 1,
-                                                data: json!(null),
-                                            })
-                                        }
-                                        _ => {}
-                                    }
-
-                                    start = None;
-                                    change = None;
-                                }
-
-                                offset += x.len() + 1;
-                            }
-                            Difference::Add(ref x) => {
-                                if start.is_none() {
-                                    start = Some(offset);
-                                    change = Some(ChangeType::Insertion);
-                                } else if change != Some(ChangeType::Insertion) {
-                                    change = Some(ChangeType::Modification);
-                                }
-
-                                offset += x.len() + 1;
-                            }
-                            Difference::Rem(ref _x) => {
-                                if start.is_none() {
-                                    start = Some(offset);
-                                    change = Some(ChangeType::Deletion);
-                                } else if change != Some(ChangeType::Deletion) {
-                                    change = Some(ChangeType::Modification);
-                                }
-                            }
-                        }
-                    }
-
-                    view.update_annotations(
-                        interval.start(),
-                        interval.end(),
-                        &deleted_spans,
-                        &AnnotationType::Other("deleted".to_string()),
-                    );
-
-                    view.update_annotations(
-                        interval.start(),
-                        interval.end(),
-                        &inserted_spans,
-                        &AnnotationType::Other("added".to_string()),
-                    );
-
-                    view.update_annotations(
-                        interval.start(),
-                        interval.end(),
-                        &modified_spans,
-                        &AnnotationType::Other("modified".to_string()),
-                    );
+                    return Some(diffs)
                 }
             }
+        }
+
+        None
+    }
+
+    fn update_diff(&mut self, view: &mut View<ChunkCache>, interval: Interval) {
+        if let Some(mut diffs) = self.get_diffs(view) {
+            // end of file
+            diffs.push(Difference::Same("".to_string()));
+
+            let mut inserted_spans: Vec<DataSpan> = Vec::new();
+            let mut deleted_spans: Vec<DataSpan> = Vec::new();
+            let mut modified_spans: Vec<DataSpan> = Vec::new();
+
+            let mut offset = 0;
+            let mut start: Option<usize> = None;
+            let mut change: Option<ChangeType> = None;
+
+            eprintln!("{:?}", diffs);
+
+            for diff in diffs {
+                match diff {
+                    Difference::Same(ref x) => {
+                        if let Some(span_start) = start {
+                            match change {
+                                Some(ChangeType::Insertion) => {
+                                    inserted_spans.push(DataSpan {
+                                        start: span_start,
+                                        end: offset,
+                                        data: json!(null),
+                                    })
+                                }
+                                Some(ChangeType::Modification) => {
+                                    modified_spans.push(DataSpan {
+                                        start: span_start,
+                                        end: offset,
+                                        data: json!(null),
+                                    })
+                                }
+                                Some(ChangeType::Deletion) => {
+                                    deleted_spans.push(DataSpan {
+                                        start: span_start,
+                                        end: span_start + 1,
+                                        data: json!(null),
+                                    })
+                                }
+                                _ => {}
+                            }
+
+                            start = None;
+                            change = None;
+                        }
+
+                        offset += x.len() + 1;
+                    }
+                    Difference::Add(ref x) => {
+                        if start.is_none() {
+                            start = Some(offset);
+                            change = Some(ChangeType::Insertion);
+                        } else if change != Some(ChangeType::Insertion) {
+                            change = Some(ChangeType::Modification);
+                        }
+
+                        offset += x.len() + 1;
+                    }
+                    Difference::Rem(ref _x) => {
+                        if start.is_none() {
+                            start = Some(offset);
+                            change = Some(ChangeType::Deletion);
+                        } else if change != Some(ChangeType::Deletion) {
+                            change = Some(ChangeType::Modification);
+                        }
+                    }
+                }
+            }
+
+            eprintln!("inserted_spans {:?}", inserted_spans);
+            eprintln!("deleted_spans {:?}", deleted_spans);
+            eprintln!("modified_spans {:?}", modified_spans);
+
+            view.update_annotations(
+                interval.start(),
+                interval.end(),
+                &deleted_spans,
+                &AnnotationType::Other("deleted".to_string()),
+            );
+
+            view.update_annotations(
+                interval.start(),
+                interval.end(),
+                &inserted_spans,
+                &AnnotationType::Other("added".to_string()),
+            );
+
+            view.update_annotations(
+                interval.start(),
+                interval.end(),
+                &modified_spans,
+                &AnnotationType::Other("modified".to_string()),
+            );
         }
     }
 }
