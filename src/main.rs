@@ -7,7 +7,6 @@ extern crate xi_rope;
 
 use git2::{DiffOptions, ObjectType, Repository};
 use std::path::Path;
-use std::cmp::max;
 
 use crate::xi_core::annotations::AnnotationType;
 use crate::xi_core::plugin_rpc::DataSpan;
@@ -33,6 +32,10 @@ impl Plugin for XiffPlugin {
 
     fn new_view(&mut self, view: &mut View<Self::Cache>) {
         view.schedule_idle();
+
+        if let Some(branch) = self.get_current_branch(view) {
+            view.add_status_item("branch", &format!("branch: {}", branch), "left");
+        }
     }
 
     fn did_close(&mut self, _view: &View<Self::Cache>) {}
@@ -53,12 +56,38 @@ impl Plugin for XiffPlugin {
 
     fn idle(&mut self, view: &mut View<Self::Cache>) {
         self.update_diff(view, Interval::new(0, view.get_buf_size()));
+
+        if let Some(branch) = self.get_current_branch(view) {
+            view.update_status_item("branch", &format!("branch: {}", branch));
+        } else {
+            view.remove_status_item("branch");
+        }
     }
 }
 
 impl XiffPlugin {
     fn new() -> XiffPlugin {
         XiffPlugin {}
+    }
+
+    fn get_current_branch(&self, view: &mut View<ChunkCache>) -> Option<String> {
+        if let Some(path) = view.get_path() {
+            // get repository if current folder is part of one
+            if let Ok(repo) = Repository::open(path.parent().unwrap()) {
+                let head = match repo.head() {
+                    Ok(head) => Some(head),
+                    Err(_e) => return None,
+                };
+                let head = head.as_ref().and_then(|h| h.shorthand());
+
+                match head {
+                    Some(s) => return Some(s.to_owned()),
+                    _ => return None,
+                }
+            }
+        }
+
+        None
     }
 
     fn get_head_content(&mut self, view: &mut View<ChunkCache>) -> Option<String> {
@@ -83,7 +112,7 @@ impl XiffPlugin {
                 let head_blob = repo.find_blob(head_file_oid).unwrap();
                 let head_content = str::from_utf8(head_blob.content()).unwrap();
 
-                return Some(head_content.to_owned())
+                return Some(head_content.to_owned());
             }
         }
 
@@ -111,27 +140,23 @@ impl XiffPlugin {
                     diff::Result::Both(_, _) => {
                         if let Some(start) = start_line {
                             match change {
-                                Some(ChangeType::Insertion) => {
-                                    inserted_spans.push(DataSpan {
-                                        start: view.offset_of_line(start).unwrap(),
-                                        end: view.offset_of_line(line).unwrap_or(view.get_buf_size()) - 1,
-                                        data: json!(null),
-                                    })
-                                }
-                                Some(ChangeType::Modification) => {
-                                    modified_spans.push(DataSpan {
-                                        start: view.offset_of_line(start).unwrap(),
-                                        end: view.offset_of_line(line).unwrap_or(view.get_buf_size()) - 1,
-                                        data: json!(null),
-                                    })
-                                }
-                                Some(ChangeType::Deletion) => {
-                                    deleted_spans.push(DataSpan {
-                                        start: view.offset_of_line(start).unwrap(),
-                                        end: view.offset_of_line(start).unwrap(),
-                                        data: json!(null),
-                                    })
-                                }
+                                Some(ChangeType::Insertion) => inserted_spans.push(DataSpan {
+                                    start: view.offset_of_line(start).unwrap(),
+                                    end: view.offset_of_line(line).unwrap_or(view.get_buf_size())
+                                        - 1,
+                                    data: json!(null),
+                                }),
+                                Some(ChangeType::Modification) => modified_spans.push(DataSpan {
+                                    start: view.offset_of_line(start).unwrap(),
+                                    end: view.offset_of_line(line).unwrap_or(view.get_buf_size())
+                                        - 1,
+                                    data: json!(null),
+                                }),
+                                Some(ChangeType::Deletion) => deleted_spans.push(DataSpan {
+                                    start: view.offset_of_line(start).unwrap(),
+                                    end: view.offset_of_line(start).unwrap(),
+                                    data: json!(null),
+                                }),
                                 _ => {}
                             }
 
