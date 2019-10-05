@@ -17,6 +17,8 @@ use std::str;
 use xi_plugin_lib::{mainloop, ChunkCache, Plugin, View};
 use xi_rope::interval::Interval;
 use xi_rope::rope::RopeDelta;
+use std::cmp::max;
+
 
 struct XiffPlugin {}
 
@@ -102,17 +104,19 @@ impl XiffPlugin {
                 // get file version that is part of HEAD
                 let head_obj = repo.revparse_single("HEAD").unwrap();
                 let head_tree = head_obj.peel(ObjectType::Tree).unwrap();
-                let head_file_oid = head_tree
+
+                if let Ok(head_file) = head_tree
                     .as_tree()
                     .unwrap()
-                    .get_path(&Path::new(path.file_name().unwrap()))
-                    .unwrap()
-                    .id();
+                    .get_path(&Path::new(path.file_name().unwrap())) {
 
-                let head_blob = repo.find_blob(head_file_oid).unwrap();
-                let head_content = str::from_utf8(head_blob.content()).unwrap();
+                    let head_file_oid = head_file.id();
 
-                return Some(head_content.to_owned());
+                    let head_blob = repo.find_blob(head_file_oid).unwrap();
+                    let head_content = str::from_utf8(head_blob.content()).unwrap();
+
+                    return Some(head_content.to_owned());
+                }
             }
         }
 
@@ -139,24 +143,32 @@ impl XiffPlugin {
                 match diff {
                     diff::Result::Both(_, _) => {
                         if let Some(start) = start_line {
+
+                            let line_end = match view.offset_of_line(line) {
+                                Ok(offset) => offset - 1,
+                                Err(_) => view.get_buf_size()
+                            };
+
+                            let line_start = view.offset_of_line(start).unwrap();
+
                             match change {
                                 Some(ChangeType::Insertion) => inserted_spans.push(DataSpan {
-                                    start: view.offset_of_line(start).unwrap(),
-                                    end: view.offset_of_line(line).unwrap_or(view.get_buf_size())
-                                        - 1,
+                                    start: line_start,
+                                    end: max(line_end, line_start),
                                     data: json!(null),
                                 }),
                                 Some(ChangeType::Modification) => modified_spans.push(DataSpan {
-                                    start: view.offset_of_line(start).unwrap(),
-                                    end: view.offset_of_line(line).unwrap_or(view.get_buf_size())
-                                        - 1,
+                                    start: line_start,
+                                    end: max(line_end, line_start),
                                     data: json!(null),
                                 }),
-                                Some(ChangeType::Deletion) => deleted_spans.push(DataSpan {
-                                    start: view.offset_of_line(start).unwrap(),
-                                    end: view.offset_of_line(start).unwrap(),
-                                    data: json!(null),
-                                }),
+                                Some(ChangeType::Deletion) => {
+                                    deleted_spans.push(DataSpan {
+                                        start: line_start,
+                                        end: line_start,
+                                        data: json!(null),
+                                    })
+                                },
                                 _ => {}
                             }
 
@@ -190,6 +202,13 @@ impl XiffPlugin {
             view.update_annotations(
                 interval.start(),
                 interval.end(),
+                &deleted_spans,
+                &AnnotationType::Other("deleted".to_string()),
+            );
+
+            view.update_annotations(
+                interval.start(),
+                interval.end(),
                 &inserted_spans,
                 &AnnotationType::Other("added".to_string()),
             );
@@ -199,13 +218,6 @@ impl XiffPlugin {
                 interval.end(),
                 &modified_spans,
                 &AnnotationType::Other("modified".to_string()),
-            );
-
-            view.update_annotations(
-                interval.start(),
-                interval.end(),
-                &deleted_spans,
-                &AnnotationType::Other("deleted".to_string()),
             );
         }
     }
