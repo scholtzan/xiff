@@ -20,13 +20,3 @@ directory containing the manifest. (This is the default; the location can be
 changed in the manifest.)
 
 Currently this plugin requires a special branch of xi-mac which adds support for gutter annotations: https://github.com/scholtzan/xi-mac/tree/diff-annotations
-
-## Known Issues and Roadmap
-
-- [ ] https://github.com/xi-editor/xi-editor/issues/1181
-- [ ] Default `RENDER_DELAY` in xi-editor is too low and needs to be increased
-- [ ] Gutter annotations not supported by xi-mac by default yet (special branch available)
-- [ ] When scrolling the gutter annotations currently do not get updated
-- [ ] Currently only works for files that are part of a git repository
-- [ ] Does not register git commits, gutter annotations will still be shown until an edit is made
-- [ ] Deletions/insertions could be shown in the status bar 
