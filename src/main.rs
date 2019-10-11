@@ -20,7 +20,9 @@ use xi_rope::rope::RopeDelta;
 use std::cmp::max;
 
 
-struct XiffPlugin {}
+struct XiffPlugin {
+    status_item_visible: bool
+}
 
 #[derive(PartialEq, Debug)]
 enum ChangeType {
@@ -36,6 +38,7 @@ impl Plugin for XiffPlugin {
         view.schedule_idle();
 
         if let Some(branch) = self.get_current_branch(view) {
+            self.status_item_visible = true;
             view.add_status_item("branch", &format!("branch: {}", branch), "left");
         }
     }
@@ -60,8 +63,12 @@ impl Plugin for XiffPlugin {
         self.update_diff(view, Interval::new(0, view.get_buf_size()));
 
         if let Some(branch) = self.get_current_branch(view) {
+            self.status_item_visible = true;
             view.update_status_item("branch", &format!("branch: {}", branch));
-        } else {
+        } else if self.status_item_visible {
+            // this prevents the plugin from trying to remove the branch every time when the current
+            // directory does not have a git repo
+            self.status_item_visible = false;
             view.remove_status_item("branch");
         }
     }
@@ -69,7 +76,9 @@ impl Plugin for XiffPlugin {
 
 impl XiffPlugin {
     fn new() -> XiffPlugin {
-        XiffPlugin {}
+        XiffPlugin {
+            status_item_visible: false
+        }
     }
 
     fn get_current_branch(&self, view: &mut View<ChunkCache>) -> Option<String> {
