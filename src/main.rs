@@ -5,7 +5,7 @@ extern crate xi_core_lib as xi_core;
 extern crate xi_plugin_lib;
 extern crate xi_rope;
 
-use git2::{DiffOptions, ObjectType, Repository};
+use git2::{DiffOptions, ObjectType, Repository, RepositoryOpenFlags};
 use std::path::Path;
 
 use crate::xi_core::annotations::AnnotationType;
@@ -13,15 +13,16 @@ use crate::xi_core::plugin_rpc::DataSpan;
 use crate::xi_core::ConfigTable;
 use serde_json;
 use serde_json::json;
+use std::cmp::max;
+use std::ffi::OsStr;
+use std::fs;
 use std::str;
 use xi_plugin_lib::{mainloop, ChunkCache, Plugin, View};
 use xi_rope::interval::Interval;
 use xi_rope::rope::RopeDelta;
-use std::cmp::max;
-
 
 struct XiffPlugin {
-    status_item_visible: bool
+    status_item_visible: bool,
 }
 
 #[derive(PartialEq, Debug)]
@@ -77,14 +78,18 @@ impl Plugin for XiffPlugin {
 impl XiffPlugin {
     fn new() -> XiffPlugin {
         XiffPlugin {
-            status_item_visible: false
+            status_item_visible: false,
         }
     }
 
     fn get_current_branch(&self, view: &mut View<ChunkCache>) -> Option<String> {
         if let Some(path) = view.get_path() {
             // get repository if current folder is part of one
-            if let Ok(repo) = Repository::open(path.parent().unwrap()) {
+            if let Ok(repo) = Repository::open_ext(
+                path.parent().unwrap(),
+                RepositoryOpenFlags::empty(),
+                &[] as &[&OsStr],
+            ) {
                 let head = match repo.head() {
                     Ok(head) => Some(head),
                     Err(_e) => return None,
@@ -104,7 +109,11 @@ impl XiffPlugin {
     fn get_head_content(&mut self, view: &mut View<ChunkCache>) -> Option<String> {
         if let Some(path) = view.get_path() {
             // get repository if current folder is part of one
-            if let Ok(repo) = Repository::open(path.parent().unwrap()) {
+            if let Ok(repo) = Repository::open_ext(
+                path.parent().unwrap(),
+                RepositoryOpenFlags::empty(),
+                &[] as &[&OsStr],
+            ) {
                 let mut opts = DiffOptions::new();
                 opts.new_prefix(path)
                     .include_ignored(false)
@@ -114,11 +123,19 @@ impl XiffPlugin {
                 let head_obj = repo.revparse_single("HEAD").unwrap();
                 let head_tree = head_obj.peel(ObjectType::Tree).unwrap();
 
+                // get relative file path of file starting from .git directory
+                let parent_path = &repo.path().to_str().unwrap().replace(".git/", "");
+                let file_path = fs::canonicalize(&path)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace(parent_path, "");
+
                 if let Ok(head_file) = head_tree
                     .as_tree()
                     .unwrap()
-                    .get_path(&Path::new(path.file_name().unwrap())) {
-
+                    .get_path(&Path::new(&file_path))
+                {
                     let head_file_oid = head_file.id();
 
                     let head_blob = repo.find_blob(head_file_oid).unwrap();
@@ -152,10 +169,9 @@ impl XiffPlugin {
                 match diff {
                     diff::Result::Both(_, _) => {
                         if let Some(start) = start_line {
-
                             let line_end = match view.offset_of_line(line) {
                                 Ok(offset) => offset - 1,
-                                Err(_) => view.get_buf_size()
+                                Err(_) => view.get_buf_size(),
                             };
 
                             let line_start = view.offset_of_line(start).unwrap();
@@ -171,13 +187,11 @@ impl XiffPlugin {
                                     end: max(line_end, line_start),
                                     data: json!(null),
                                 }),
-                                Some(ChangeType::Deletion) => {
-                                    deleted_spans.push(DataSpan {
-                                        start: line_start,
-                                        end: line_start,
-                                        data: json!(null),
-                                    })
-                                },
+                                Some(ChangeType::Deletion) => deleted_spans.push(DataSpan {
+                                    start: line_start,
+                                    end: line_start,
+                                    data: json!(null),
+                                }),
                                 _ => {}
                             }
 
